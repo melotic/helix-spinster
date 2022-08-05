@@ -1,0 +1,19 @@
+[package]
+name = "helix-spinster"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+azure-kusto-data = { git = "https://github.com/Azure/azure-kusto-rust"}
+color-eyre = "0.6"
+tokio = {version = "1", features=["full"]}
+indicatif = "0.17"
+reqwest = "0"
+reqwest-retry = "0"
+reqwest-middleware = "0"
+serde_json = "1"
+regex = "1"
+chrono = "0.4"
+csv = "1"
