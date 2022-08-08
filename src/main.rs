@@ -2,6 +2,7 @@ use azure_kusto_data::prelude::KustoClient;
 use chrono::{DateTime, Duration, FixedOffset, SecondsFormat};
 use color_eyre::Result;
 use indicatif::{ProgressBar, ProgressIterator, ProgressStyle};
+use itertools::Itertools;
 use regex::Regex;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_retry::{policies::ExponentialBackoffBuilder, RetryTransientMiddleware};
@@ -14,23 +15,24 @@ use std::{
 };
 use tokio::{select, sync::Mutex, time};
 
-const DNC_ENG_KUSTO_CONN_STRING: &str = "server=https://engsrvprod.kusto.windows.net";
-const DNC_ENG_KUSTO_DATABASE: &str = "engineeringdata";
+const KUSTO_CONN_STRING: &str = "server=https://engsrvprod.kusto.windows.net";
+const KUSTO_DATABASE: &str = "engineeringdata";
 const HELIX_LOGS_QUERY: &str = r#"TimelineRecords
+| where FinishTime > ago(7d)
 | where Result != "skipped"
 | where LogUri != ""
-| where WorkerName != ""
+| where WorkerName startswith "NetCore1ESPool"
 | where Name has "helix"
-| top 50000 by FinishTime"#;
+| join kind=inner (TimelineBuilds | project Definition, BuildId, Repository) on BuildId
+"#;
 
 #[derive(Debug)]
 struct OutputRecord {
-    //build_id: u64,
-    //&record_id: String,
     wasted_time: i64,
     start_time: DateTime<FixedOffset>,
-    //helix_job_id: String,
     worker_name: String,
+    definition_name: String,
+    repo: String,
 }
 struct Config {
     client: ClientWithMiddleware,
@@ -58,6 +60,8 @@ async fn worker_task(config: Arc<Config>, dt: Vec<serde_json::Value>) {
             wasted_time: wait_time.num_seconds(),
             start_time: DateTime::parse_from_rfc3339(dt[6].as_str().unwrap()).unwrap(),
             worker_name: dt[12].as_str().unwrap().to_string(),
+            definition_name: dt[25].as_str().unwrap().to_string(),
+            repo: dt[27].as_str().unwrap().to_string(),
         };
 
         let mut output = config.output.lock().await;
@@ -79,30 +83,33 @@ async fn get_helix_wait_time(log_uri: &str, config: &Arc<Config>) -> Option<Dura
         .await
         .ok()?;
 
-    let mut started = HashMap::new();
-    let mut longest_duration = None;
+    let mut first_start = None;
+    let mut last_end = None;
 
     for line in log_text.lines() {
-        if let Some((time, job_id)) = find_helix_job_info(&config.send_job_regex, line) {
-            started.insert(job_id, time);
-        } else if let Some((time, job_id)) = find_helix_job_info(&config.job_finished_regex, line) {
-            let elapsed = time - started[&job_id];
-
-            longest_duration = match longest_duration {
-                None => Some(elapsed),
-                Some(longest) => Some(longest.max(elapsed)),
+        if first_start == None {
+            if let Some((dt, _)) = find_helix_job_info(&config.send_job_regex, line) {
+                first_start = Some(dt);
             }
+        }
+
+        if let Some((dt, _)) = find_helix_job_info(&config.job_finished_regex, line) {
+            last_end = Some(dt);
         }
     }
 
-    longest_duration
+    if let (Some(first_start), Some(last_end)) = (first_start, last_end) {
+        Some(last_end - first_start)
+    } else {
+        None
+    }
 }
 
 fn find_helix_job_info<'a>(
-    send_job_regex: &Regex,
+    regex: &Regex,
     line: &'a str,
 ) -> Option<(DateTime<FixedOffset>, &'a str)> {
-    let caps = send_job_regex.captures(line)?;
+    let caps = regex.captures(line)?;
 
     if caps.len() != 3 {
         return None;
@@ -116,10 +123,10 @@ fn find_helix_job_info<'a>(
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let kusto = KustoClient::try_from(DNC_ENG_KUSTO_CONN_STRING.to_string())?;
+    let kusto = KustoClient::try_from(KUSTO_CONN_STRING.to_string())?;
 
     let mut task = kusto
-        .execute_query(DNC_ENG_KUSTO_DATABASE, HELIX_LOGS_QUERY)
+        .execute_query(KUSTO_DATABASE, HELIX_LOGS_QUERY)
         .into_future();
 
     let pb = ProgressBar::new_spinner();
@@ -185,13 +192,21 @@ async fn main() -> Result<()> {
 
 fn export_csv(data: &[OutputRecord], filename: &str) {
     let mut wtr = csv::Writer::from_path(filename).unwrap();
-    wtr.write_record(&["start_time", "worker_name", "wasted_time"])
-        .unwrap();
+    wtr.write_record(&[
+        "start_time",
+        "worker_name",
+        "wasted_time",
+        "definition",
+        "repository",
+    ])
+    .unwrap();
     for record in data.iter().progress().with_message("writing to csv") {
         wtr.write_record(&[
             &record.start_time.to_rfc3339_opts(SecondsFormat::Secs, true),
             &record.worker_name,
             &record.wasted_time.to_string(),
+            &record.definition_name,
+            &record.repo,
         ])
         .unwrap();
     }
