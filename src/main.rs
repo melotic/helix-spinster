@@ -117,13 +117,13 @@ async fn get_helix_wait_time(log_uri: &str, config: &Arc<Config>) -> Option<Dura
         .await
         .ok()?;
 
-    let mut first_start = None;
+    let mut last_start = None;
     let mut last_end = None;
 
     for line in log_text.lines() {
         //if first_start == None {
         if let Some((dt, _)) = find_helix_job_info(&config.send_job_regex, line) {
-            first_start = Some(dt);
+            last_start = Some(dt);
         }
         //}
 
@@ -132,7 +132,7 @@ async fn get_helix_wait_time(log_uri: &str, config: &Arc<Config>) -> Option<Dura
         }
     }
 
-    if let (Some(first_start), Some(last_end)) = (first_start, last_end) {
+    if let (Some(first_start), Some(last_end)) = (last_start, last_end) {
         Some(last_end - first_start)
     } else {
         None
