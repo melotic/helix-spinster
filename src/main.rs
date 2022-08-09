@@ -23,7 +23,7 @@ use tokio::{
 const KUSTO_CONN_STRING: &str = "server=https://1es.kusto.windows.net;AAD Federated Security=True";
 const KUSTO_DATABASE: &str = "AzureDevOps";
 const HELIX_LOGS_QUERY: &str = r#"BuildTimelineRecord
-| where StartTime > ago(14d)
+| where StartTime > ago(7d)
 | where OrganizationName == "dnceng"
 | where WorkerName startswith "NetCore1ESPool"
 | where Type == "Task"
@@ -69,7 +69,7 @@ fn create_retry_client() -> ClientWithMiddleware {
             .build()
             .unwrap(),
     )
-    .with(RetryAfterMiddleware::new())
+    //.with(RetryAfterMiddleware::new())
     .with(RetryTransientMiddleware::new_with_policy(retry_policy))
     .build()
 }
@@ -121,11 +121,11 @@ async fn get_helix_wait_time(log_uri: &str, config: &Arc<Config>) -> Option<Dura
     let mut last_end = None;
 
     for line in log_text.lines() {
-        if first_start == None {
-            if let Some((dt, _)) = find_helix_job_info(&config.send_job_regex, line) {
-                first_start = Some(dt);
-            }
+        //if first_start == None {
+        if let Some((dt, _)) = find_helix_job_info(&config.send_job_regex, line) {
+            first_start = Some(dt);
         }
+        //}
 
         if let Some((dt, _)) = find_helix_job_info(&config.job_finished_regex, line) {
             last_end = Some(dt);
